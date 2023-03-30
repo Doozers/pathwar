@@ -11,16 +11,17 @@ import (
 	"strconv"
 	"text/template"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
-	"github.com/moby/moby/pkg/stdcopy"
 	"go.uber.org/zap"
 	"pathwar.land/pathwar/v2/go/pkg/errcode"
 	"pathwar.land/pathwar/v2/go/pkg/pwapi"
 	"pathwar.land/pathwar/v2/go/pkg/pwcompose"
 	"pathwar.land/pathwar/v2/go/pkg/pwdb"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/pkg/stdcopy"
 )
 
 func applyNginxConfig(ctx context.Context, apiInstances *pwapi.AgentListInstances_Output, dockerClient *client.Client, opts Opts) error {
@@ -60,6 +61,16 @@ func applyNginxConfig(ctx context.Context, apiInstances *pwapi.AgentListInstance
 	if err != nil {
 		return errcode.ErrCopyCustom503ToContainer.Wrap(err)
 	}
+	css503, err := build503CustomCss()
+	if err != nil {
+		return errcode.ErrBuildCustom503Page.Wrap(err)
+	}
+	logger.Debug("copy 503.css into the container", zap.String("container-id", nginxContainer.ID))
+	err = dockerClient.CopyToContainer(ctx, nginxContainer.ID, "/usr/share/nginx/html/", css503, types.CopyToContainerOptions{})
+	if err != nil {
+		return errcode.ErrCopyCustom503ToContainer.Wrap(err)
+	}
+
 	// configure nginx binary
 	buf, err := buildNginxConfigTar(config, logger)
 	if err != nil {
@@ -294,6 +305,30 @@ func buildCustom503Tar() (*bytes.Buffer, error) {
 	return &buf, nil
 }
 
+func build503CustomCss() (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	err := tw.WriteHeader(&tar.Header{
+		Name: "503.css",
+		Mode: 0o755,
+		Size: int64(len(custom503css)),
+	})
+	if err != nil {
+		return nil, errcode.ErrWriteCustom503FileHeader.Wrap(err)
+	}
+
+	if _, err := tw.Write([]byte(custom503css)); err != nil {
+		return nil, errcode.ErrWriteCustom503File.Wrap(err)
+	}
+
+	err = tw.Close()
+	if err != nil {
+		return nil, errcode.ErrCloseTarWriter.Wrap(err)
+	}
+
+	return &buf, nil
+}
+
 func buildNginxContainer(ctx context.Context, cli *client.Client, opts Opts) (string, error) {
 	logger := opts.Logger
 
@@ -474,13 +509,10 @@ http {
     server_name _;
     error_log   /proc/self/fd/2;
     access_log  /proc/self/fd/1;
-	error_page 503 /503.html;
-	location = /503.html {
+
+	location / {
 			root /usr/share/nginx/html;
 			internal;
-	}
-	location / {
-			return 503;
 	}
   }
 
@@ -549,3 +581,10 @@ const custom503Content = `<!DOCTYPE html>
 </body>
 </html>
 `
+
+const custom503css = `/* CSS styles */
+h1 {
+font-family: Impact, sans-serif;
+color: #CE5937;
+}
+	`
